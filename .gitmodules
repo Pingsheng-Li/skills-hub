@@ -1,0 +1,15 @@
+[submodule "skills-anthropic"]
+	path = skills-anthropic
+	url = https://github.com/anthropics/skills
+[submodule "skills-for-engineers"]
+	path = skills-for-engineers
+	url = https://github.com/mattpocock/skills
+[submodule "agent-skills"]
+	path = agent-skills
+	url = https://github.com/addyosmani/agent-skills
+[submodule "agent-research-skills"]
+	path = agent-research-skills
+	url = https://github.com/lingzhi227/agent-research-skills
+[submodule "academic-research-skills"]
+	path = academic-research-skills
+	url = https://github.com/imbad0202/academic-research-skills

@@ -67,8 +67,6 @@ DEFAULT_PICKS: tuple[Pick, ...] = (
     Pick("skills-for-engineers/skills/engineering/grill-with-docs", "planning", "Stress-tests plans against domain docs and ADRs."),
     Pick("skills-for-engineers/skills/engineering/improve-codebase-architecture", "architecture", "Finds architecture and testability improvements."),
     Pick("skills-for-engineers/skills/engineering/prototype", "implementation", "Builds throwaway prototypes to validate designs."),
-    Pick("skills-for-engineers/skills/engineering/to-prd", "planning", "Converts conversation context into a PRD."),
-    Pick("skills-for-engineers/skills/engineering/to-issues", "planning", "Splits plans into independently grabbable issues."),
     Pick("skills-for-engineers/skills/engineering/triage", "operations", "Issue triage workflow."),
     Pick("skills-for-engineers/skills/misc/setup-pre-commit", "operations", "Sets up commit-time quality gates."),
     Pick("skills-for-engineers/skills/misc/git-guardrails-claude-code", "operations", "Blocks dangerous git commands in Claude Code hooks."),

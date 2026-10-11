@@ -39,7 +39,7 @@ class Target:
     kind: str = "dir"  # "dir" syncs whole skill dirs, "file" syncs SKILL.md.
 
 
-DEFAULT_PICKS: tuple[Pick, ...] = (
+CURATED_PICKS: tuple[Pick, ...] = (
     Pick("agent-skills/skills/using-agent-skills", "meta", "Skill discovery and routing."),
     Pick("agent-skills/skills/context-engineering", "meta", "Agent context setup and rule-file hygiene."),
     Pick("agent-skills/skills/source-driven-development", "research", "Grounds framework/library work in official sources."),
@@ -114,6 +114,27 @@ DEFAULT_PICKS: tuple[Pick, ...] = (
     Pick("agent-research-skills/skills/slide-generation", "docs", "Turns completed papers into Beamer slides or posters."),
     Pick("agent-research-skills/skills/paper-assembly", "research", "Orchestrates full paper assembly with checkpoints and state propagation."),
 )
+
+
+# Profiles refer to the curated catalog above so selection reasons stay in one place.
+PROFILE_SKILLS = {
+    "starter": (
+        "context-engineering", "source-driven-development", "spec-driven-development",
+        "planning-and-task-breakdown", "incremental-implementation", "test-driven-development",
+        "debugging-and-error-recovery", "api-and-interface-design", "code-review-and-quality",
+        "code-simplification", "security-and-hardening", "git-workflow-and-versioning",
+        "documentation-and-adrs", "prototype", "handoff", "webapp-testing",
+        "skill-creator", "doc-coauthoring",
+    ),
+    "research": (
+        "pdf", "xlsx", "academic-paper", "academic-paper-reviewer", "literature-search",
+        "literature-review", "idea-generation", "novelty-assessment", "research-planning",
+        "experiment-design", "experiment-code", "data-analysis", "figure-generation",
+        "citation-management",
+    ),
+    "full": tuple(Path(pick.path).name for pick in CURATED_PICKS),
+}
+DEFAULT_PROFILE = "starter"
 
 
 TARGETS: dict[str, Target] = {
@@ -208,7 +229,14 @@ def scan_all_skills(root: Path) -> list[Skill]:
     return skills
 
 
-def selected_skills(root: Path, use_all: bool, includes: list[str], excludes: list[str]) -> list[Skill]:
+def selected_skills(
+    root: Path,
+    use_all: bool,
+    includes: list[str],
+    excludes: list[str],
+    profiles: list[str] | None = None,
+    only: list[str] | None = None,
+) -> list[Skill]:
     all_skills = scan_all_skills(root)
     by_name: dict[str, Skill] = {}
     by_path: dict[str, Skill] = {}
@@ -216,19 +244,28 @@ def selected_skills(root: Path, use_all: bool, includes: list[str], excludes: li
         by_name.setdefault(skill.name, skill)
         by_path[skill.rel_source] = skill
 
-    if use_all:
+    if only is not None:
+        if not only:
+            raise ValueError("--only requires at least one skill name or relative path")
+        skills = []
+    elif use_all:
         skills = all_skills
     else:
-        skills = [validate_pick(root, pick) for pick in DEFAULT_PICKS]
+        names: set[str] = set()
+        for profile in profiles or [DEFAULT_PROFILE]:
+            if profile not in PROFILE_SKILLS:
+                raise ValueError(f"unknown profile: {profile}; choose from {', '.join(PROFILE_SKILLS)}")
+            names.update(PROFILE_SKILLS[profile])
+        skills = [validate_pick(root, pick) for pick in CURATED_PICKS if Path(pick.path).name in names]
 
-    for item in includes:
+    for item in [*(only or []), *includes]:
         skill = by_name.get(item) or by_path.get(item.rstrip("/"))
         if skill is None:
             candidate = (root / item).resolve()
             if (candidate / "SKILL.md").is_file():
                 skill = Skill(skill_name(candidate), candidate, relpath(candidate, root))
             else:
-                raise ValueError(f"unknown --include skill: {item}")
+                raise ValueError(f"unknown skill: {item}")
         if all(existing.name != skill.name for existing in skills):
             skills.append(skill)
 
@@ -251,6 +288,8 @@ def selected_skills(root: Path, use_all: bool, includes: list[str], excludes: li
 
 
 def target_dir(root: Path, target: Target, scope: str) -> Path | None:
+    if target.name == "claude" and scope == "user" and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser().resolve() / "skills"
     raw = target.user_path if scope == "user" else target.project_path
     if raw is None:
         return None
@@ -285,19 +324,15 @@ def load_manifest(base: Path) -> dict[str, object]:
     return loaded
 
 
-def write_manifest(base: Path, skills: list[Skill], target: Target, mode: str, dry_run: bool) -> None:
+def write_manifest(
+    base: Path, skills: dict[str, object], target: Target, mode: str, dry_run: bool,
+) -> None:
     manifest = {
         "version": VERSION,
         "mode": mode,
         "target": target.name,
         "kind": target.kind,
-        "skills": {
-            skill.name: {
-                "source": skill.rel_source,
-                "category": skill.category,
-            }
-            for skill in skills
-        },
+        "skills": skills,
     }
     path = base / MANIFEST
     if dry_run:
@@ -339,23 +374,23 @@ def install_skill(
     managed: set[str],
     force: bool,
     dry_run: bool,
-) -> str:
+) -> tuple[str, bool]:
     dest = target_path(base, skill, target)
     src = source_path(skill, target).resolve()
 
     if dest.exists() or dest.is_symlink():
         already_linked = dest.is_symlink() and dest.resolve() == src
         if already_linked and mode == "symlink":
-            return f"unchanged: {skill.name} -> {dest}"
+            return f"unchanged: {skill.name} -> {dest}", skill.name in managed or force
 
-        if skill.name in managed or dest.is_symlink() or force:
+        if skill.name in managed or force:
             remove_path(dest, dry_run)
         else:
-            return f"skipped unmanaged existing path: {dest}"
+            return f"skipped unmanaged existing path: {dest}", False
 
     if dry_run:
         action = "link" if mode == "symlink" else "copy"
-        return f"would {action}: {src} -> {dest}"
+        return f"would {action}: {src} -> {dest}", True
 
     try:
         if mode == "symlink":
@@ -369,10 +404,10 @@ def install_skill(
                 ignore=shutil.ignore_patterns(".git", "node_modules", "__pycache__"),
             )
     except PermissionError:
-        return f"skipped permission denied: {dest}"
+        return f"skipped permission denied: {dest}", False
 
     action = "linked" if mode == "symlink" else "copied"
-    return f"{action}: {skill.name} -> {dest}"
+    return f"{action}: {skill.name} -> {dest}", True
 
 
 def sync_target(
@@ -388,8 +423,10 @@ def sync_target(
         return
 
     manifest = load_manifest(base)
-    old_skills = set(manifest.get("skills", {}).keys())
+    old_entries = manifest["skills"]
+    old_skills = set(old_entries)
     new_skills = {skill.name for skill in skills}
+    managed_entries = dict(old_entries)
 
     if prune:
         for stale in sorted(old_skills - new_skills):
@@ -397,21 +434,26 @@ def sync_target(
             if stale_path.exists() or stale_path.is_symlink():
                 remove_path(stale_path, dry_run)
                 print(f"pruned: {stale_path}")
+            managed_entries.pop(stale, None)
 
     for skill in skills:
-        print(install_skill(skill, target, base, mode, old_skills, force, dry_run))
+        message, installed = install_skill(skill, target, base, mode, old_skills, force, dry_run)
+        print(message)
+        if installed:
+            managed_entries[skill.name] = {"source": skill.rel_source, "category": skill.category}
 
-    write_manifest(base, skills, target, mode, dry_run)
+    write_manifest(base, managed_entries, target, mode, dry_run)
 
 
 def parse_target_names(raw: list[str]) -> list[str]:
     names = parse_csv(raw) or list(DEFAULT_TARGET_NAMES)
+    names = ["claude" if name == "claude-code" else name for name in names]
     if "all" in names:
         names = list(TARGETS)
     unknown = [name for name in names if name not in TARGETS]
     if unknown:
         raise ValueError(f"unknown target(s): {', '.join(unknown)}")
-    return names
+    return list(dict.fromkeys(names))
 
 
 def list_skills(skills: list[Skill]) -> None:
@@ -449,10 +491,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             f"Comma-separated targets. Defaults to {', '.join(DEFAULT_TARGET_NAMES)}. "
-            f"Available: {', '.join(TARGETS)}, all."
+            f"Available: {', '.join(TARGETS)}, all. 'claude-code' is an alias for 'claude'."
         ),
     )
-    parser.add_argument("--all-skills", action="store_true", help="Sync every non-deprecated skill found.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--profile", action="append",
+        help=f"Comma-separated curated profiles: {', '.join(PROFILE_SKILLS)}. Default: {DEFAULT_PROFILE}.",
+    )
+    selection.add_argument("--only", action="append", help="Sync only these comma-separated skill names or paths.")
+    selection.add_argument("--all-skills", action="store_true", help="Sync every non-deprecated skill found.")
     parser.add_argument("--include", action="append", help="Extra skill name or relative skill path to sync.")
     parser.add_argument("--exclude", action="append", help="Skill name or relative skill path to omit.")
     parser.add_argument("--list", action="store_true", help="List selected skills and exit.")
@@ -479,6 +527,8 @@ def main(argv: list[str]) -> int:
             args.all_skills,
             parse_csv(args.include),
             parse_csv(args.exclude),
+            parse_csv(args.profile),
+            parse_csv(args.only) if args.only is not None else None,
         )
         target_names = parse_target_names(args.targets)
     except (FileNotFoundError, ValueError) as exc:
